@@ -2,7 +2,7 @@
 
 A tool for executing commands across Windows (and Linux) systems using various remote execution methods. Automatically tries multiple techniques until one succeeds, based on return codes and output. Makes executing commands given credentials a hell of a lot easier.
 
-Big thanks to NetExec, Impacket, and Evil-Winrm, as this tool just essentially acts as a wrapper around those (making it more of a script, I suppose).
+This is a fork of [KhaelK138/authfinder](https://github.com/KhaelK138/authfinder). Big thanks to NetExec, Impacket, and Evil-Winrm, as this tool just essentially acts as a wrapper around those (making it more of a script, I suppose).
 
 ## Features
 
