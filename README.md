@@ -1,23 +1,37 @@
 # AuthFinder
 
-A tool for executing commands across Windows (and Linux) systems using various remote execution methods. Automatically tries multiple techniques until one succeeds, based on return codes and output. Makes executing commands given credentials a hell of a lot easier.
+[![PyPI version](https://img.shields.io/pypi/v/authfinder)](https://pypi.org/project/authfinder/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-This is a fork of [KhaelK138/authfinder](https://github.com/KhaelK138/authfinder). Big thanks to NetExec, Impacket, and Evil-Winrm, as this tool just essentially acts as a wrapper around those (making it more of a script, I suppose).
+Test where credentials are valid across Windows and Linux systems using multiple authentication methods. Automatically tries different techniques until one succeeds.
+
+This is a fork of [KhaelK138/authfinder](https://github.com/KhaelK138/authfinder). Built as a wrapper around [NetExec](https://github.com/Pennyw0rth/NetExec), [Impacket](https://github.com/fortra/impacket), and [Evil-WinRM](https://github.com/Hackplayers/evil-winrm).
+
+## Quick Start
+
+```bash
+# Install
+pipx install authfinder
+
+# Test credentials on a single host
+authfinder 192.168.1.10 administrator Password123 whoami
+
+# Test across an IP range
+authfinder 192.168.1.1-50 admin Pass123 whoami
+
+# Test with NTLM hash
+authfinder 10.0.0.1-10 admin :aabbccdd11223344aabbccdd11223344 whoami
+```
 
 ## Features
 
-- **Multiple RCE Methods**: Automatically tries various Windows remote execution techniques:
-  - WinRM (HTTP/HTTPS)
-  - PSExec (Impacket)
-  - SMBExec (NetExec)
-  - WMI (NetExec)
-  - AtExec (Impacket)
-  - RDP (NetExec)
-  - SSH (NetExec)
-  - MSSQL (Impacket)
-- **Multi-threaded**: Execute commands across multiple hosts simultaneously
-- **Automatic Pass-the-Hash**: Just paste the NTLM hash as the credential
-- **Linux Support**: Use `--linux` to attempt to run commands across linux machines instead, via SSH
+- **Multiple Authentication Methods** - Automatically tries WinRM, PSExec, SMBExec, WMI, AtExec, RDP, SSH, and MSSQL
+- **Smart Port Scanning** - Pre-scans ports to only attempt viable methods
+- **Multi-threaded** - Test credentials across multiple hosts simultaneously
+- **Pass-the-Hash** - Use NTLM hashes directly as credentials
+- **Credential Files** - Test multiple username/password combinations from a file
+- **Linux Support** - Use `--linux` mode for SSH-only testing
 
 ## Installation
 
@@ -27,80 +41,97 @@ pipx install authfinder
 
 ### External Dependencies
 
-This tool requires the following external tools to be installed:
+AuthFinder requires these tools to be installed separately:
 
-```bash
-# Impacket (for PSExec, AtExec, MSSQL)
-pipx install impacket
+| Tool | Install Command | Provides |
+|------|-----------------|----------|
+| Impacket | `pipx install impacket` | PSExec, AtExec, MSSQL |
+| NetExec | `pipx install git+https://github.com/Pennyw0rth/NetExec` | SMBExec, WMI, RDP, SSH |
+| Evil-WinRM | `gem install evil-winrm` | WinRM |
 
-# NetExec (for SMBExec, WMI, RDP, SSH)
-pipx install git+https://github.com/Pennyw0rth/NetExec
+## How It Works
 
-# Evil-WinRM (for WinRM)
-gem install evil-winrm
-```
+AuthFinder scans target ports and attempts authentication methods based on what's available:
+
+| Port | Methods |
+|------|---------|
+| 445 | PSExec, SMBExec, AtExec |
+| 135 | WMI |
+| 5985/5986 | WinRM |
+| 3389 | RDP |
+| 22 | SSH |
+| 1433 | MSSQL |
+
+For each host, it tries methods in order until one succeeds (or all methods with `--run-all`). Results show both **authentication success** and **command execution success** separately.
 
 ## Usage
 
-### Basic Usage
+### Basic Syntax
 
-```bash
-# Execute command on single host
-authfinder 192.168.1.10 administrator Password123 whoami
-
-# Execute across IP range of 192.168.1.1 to 192.168.1.50
-authfinder 192.168.1.1-50 admin Pass123 "net user"
-
-# Use nthash instead of password
-authfinder 10.0.0.1-10 admin :{32-bit-hash} whoami
+```
+authfinder <targets> <username> <password> <command> [options]
 ```
 
-### IP Range Format
+### Target Formats
 
-Supports various formats:
-- Single IP: `192.168.1.10`
-- Multi-IP: `192.168.1.15,17,29,153` 
-- Range: `192.168.1.1-254`
-- Multiple ranges: `10.0.1-5.10-20` (expands to all combinations)
-- File with IP ranges: `targets.txt`
+| Format | Example | Description |
+|--------|---------|-------------|
+| Single IP | `192.168.1.10` | One host |
+| Comma-separated | `192.168.1.15,17,29` | Multiple hosts |
+| Range | `192.168.1.1-254` | IP range |
+| Multi-octet range | `10.0.1-5.10-20` | All combinations |
+| File | `targets.txt` | One target per line |
 
 ### Credential File Format
 
-Create a text file with colon-separated username:password pairs (one per line):
+Use `-f` to specify a file with credentials (one per line):
 
 ```
+# Comments start with #
 administrator:Password123!
 admin:Pass123
-backup_admin::12345678123456781234567812345678
+backup_admin::aabbccdd11223344aabbccdd11223344
 ```
 
-Lines starting with `#` are treated as comments. Passwords may contain colons (only the first colon is used as delimiter). For NT hashes, use them directly as the password.
+Format is `username:password` - only the first colon is the delimiter, so passwords can contain colons.
 
-## Command-Line Options
+### Options
 
+| Option | Description |
+|--------|-------------|
+| `-v` | Verbose output (show all tool attempts) |
+| `-o` | Show command output (may trigger AV) |
+| `-f <file>` | Use credential file |
+| `--threads <n>` | Concurrent threads (default: 10) |
+| `--tools <list>` | Comma-separated list of tools to try |
+| `--timeout <sec>` | Command timeout (default: 15) |
+| `--run-all` | Try all methods, don't stop at first success |
+| `--skip-portscan` | Skip port scan, attempt all tools |
+| `--linux` | Linux mode (SSH only) |
+
+### Examples
+
+```bash
+# Test single credential across a subnet
+authfinder 192.168.1.1-254 admin Password123 whoami
+
+# Use credential file with verbose output
+authfinder 10.0.0.1-50 -f creds.txt -v whoami
+
+# Only try specific tools
+authfinder 192.168.1.10 admin Pass123 --tools winrm,psexec whoami
+
+# Test all methods (don't stop at first success)
+authfinder 192.168.1.10 admin Pass123 --run-all whoami
+
+# Linux targets via SSH
+authfinder 10.0.0.1-10 root password --linux id
 ```
-Options:
-  -v                      Verbose output (shows all tool attempts)
-  -o                      Show successful command output (WARNING: may trigger AV)
-  -f <file>               Use credential file instead of single username/password
-  --threads <n>           Number of concurrent threads (default: 10)
-  --tools <list>          Comma-separated list of tools to try in order
-  --timeout <seconds>     Command timeout in seconds (default: 15)
-  --run-all               Run all tools instead of stopping at first success
-  --skip-portscan         Skip port scanning and attempt all tools
-  --linux                 Enables Linux-only mode, which uses SSH and ignores other tools
-```
-
-
-## Todo
-
-Add kerberos support lol
-- Requires supporting hostnames and configuring `/etc/krb5.conf` for tools like evil-winrm
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT License - see [LICENSE](LICENSE) for details.
 
 ## Disclaimer
 
-This tool is intended for authorized security assessments only. Ensure you have proper authorization before using this tool on any systems you do not own or have explicit permission to test.
+This tool is intended for **authorized security assessments only**. Ensure you have proper authorization before testing any systems you do not own.
