@@ -16,10 +16,11 @@ MAX_THREADS = 10
 
 VERBOSE = False
 OUTPUT = False
-RUN_ALL = False
+RUN_ALL = True
 SKIP_PORTSCAN = False
 TOOLS_SPECIFIED = False
 LINUX_MODE = False
+DRY_RUN = False
 
 VALID_TOOLS = ["winrm", "smbexec", "wmi", "ssh", "mssql", "psexec", "atexec", "rdp"]
 NXC_TOOLS = {"smbexec", "wmi", "ssh", "rdp"}
@@ -30,25 +31,84 @@ WINRM_CMD = "evil-winrm"
 
 print_lock = threading.Lock()
 
-def colorize(line):
-    line = line.replace("[-]", "\033[31m[-]\033[0m")
-    line = line.replace("[+]", "\033[32m[+]\033[0m")
-    return line
+# ANSI color codes
+class C:
+    RESET = "\033[0m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
 
-def vprint(msg):
+def print_section(title):
+    """Print a boxed section header like enum4linux-ng."""
+    width = 60
+    with print_lock:
+        print()
+        print(f" {'=' * width}")
+        print(f"|    {title.ljust(width - 5)}|")
+        print(f" {'=' * width}")
+
+def print_success(msg, indent=0):
+    """Print success message in green."""
+    prefix = "    " * indent
+    with print_lock:
+        print(f"{prefix}{C.GREEN}[+]{C.RESET} {msg}")
+
+def print_error(msg, indent=0):
+    """Print error message in red."""
+    prefix = "    " * indent
+    with print_lock:
+        print(f"{prefix}{C.RED}[-]{C.RESET} {msg}")
+
+def print_warning(msg, indent=0):
+    """Print warning message in yellow."""
+    prefix = "    " * indent
+    with print_lock:
+        print(f"{prefix}{C.YELLOW}[!]{C.RESET} {msg}")
+
+def print_info(msg, indent=0):
+    """Print info message in cyan."""
+    prefix = "    " * indent
+    with print_lock:
+        print(f"{prefix}{C.CYAN}[*]{C.RESET} {msg}")
+
+def print_verbose(msg, indent=0):
+    """Print verbose message in magenta (only if VERBOSE enabled)."""
     if VERBOSE:
+        prefix = "    " * indent
         with print_lock:
-            print(colorize(msg))
+            print(f"{prefix}{C.MAGENTA}[v]{C.RESET} {msg}")
 
-def oprint(msg):
-    # don't want to duplicate output, so check if verbose is enabled
+def print_output(msg):
+    """Print command output (only if OUTPUT enabled and not VERBOSE)."""
     if OUTPUT and not VERBOSE:
         with print_lock:
-            print(colorize(msg))
+            print(msg)
 
-def safe_print(msg):
+def print_table_header():
+    """Print the tool results table header."""
     with print_lock:
-        print(colorize(msg))
+        print(f"    {'Service':<12} {'Auth':<8} {'Exec':<10} {'Notes'}")
+        print(f"    {'─' * 12} {'─' * 8} {'─' * 10} {'─' * 25}")
+
+def print_tool_result(tool, status, message=None):
+    """Print a table row for tool result."""
+    tool_padded = tool.ljust(12)
+    with print_lock:
+        if status == "success":
+            print(f"    {tool_padded} {C.GREEN}{'OK':<8}{C.RESET} {C.GREEN}{'OK':<10}{C.RESET}")
+        elif status == "error":
+            note = message if message else ""
+            print(f"    {tool_padded} {C.RED}{'FAILED':<8}{C.RESET} {C.RED}{'-':<10}{C.RESET} {note}")
+        elif status == "warning":
+            note = message.replace("AUTH OK, ", "").replace("AUTH OK ", "") if message else ""
+            print(f"    {tool_padded} {C.GREEN}{'OK':<8}{C.RESET} {C.RED}{'FAILED':<10}{C.RESET} {note}")
+        elif status == "skip":
+            note = message if message else ""
+            print(f"    {tool_padded} {C.BLUE}{'-':<8}{C.RESET} {C.BLUE}{'-':<10}{C.RESET} {note}")
+
 
 def parse_ip_range(ip_range):
     parts = ip_range.split('.')
@@ -85,38 +145,34 @@ def is_nthash(credential):
 
 def load_credential_file(path):
     """
-    Load credentials from file with newline-separated format:
-    <user1>
-    <user1_password>
-    <user2>
-    <user2_password>
+    Load credentials from file with colon-separated format:
+    user1:password1
+    user2:password2
     ...
-    
+
     Blank lines and lines starting with # are ignored.
-    For hashes, use the hash directly as the password line.
+    Only the first colon is used as delimiter (passwords may contain colons).
+    For hashes, use the hash directly as the password.
     """
     try:
         with open(path, "r", encoding="utf-8") as f:
             lines = [line.rstrip("\n\r") for line in f]
     except Exception as e:
-        print(f"Error: cannot read credential file '{path}': {e}")
+        print_error(f"Cannot read credential file '{path}': {e}")
         sys.exit(1)
     creds = []
-    
-    filtered = []
-    for line in lines:
+
+    for line_num, line in enumerate(lines, 1):
         stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            filtered.append(line)
-    
-    if len(filtered) % 2 != 0:
-        raise SystemExit(f"Credential file has odd number of lines ({len(filtered)}). Expected pairs of user/password.")
-    
-    for i in range(0, len(filtered), 2):
-        user = filtered[i].strip()
-        cred = filtered[i + 1]
-        creds.append((user, cred))
-    
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if ':' not in line:
+            raise SystemExit(f"Credential file line {line_num}: missing colon delimiter. Expected format: username:password")
+
+        user, cred = line.split(':', 1)
+        creds.append((user.strip(), cred))
+
     return creds
 
 def normalize_tool_name(name):
@@ -133,7 +189,7 @@ def parse_tools_list(tools_str):
     for t in tools_str.split(','):
         normalized = normalize_tool_name(t)
         if normalized not in VALID_TOOLS:
-            print(f"Error: Invalid tool '{t}'. Valid options: {', '.join(VALID_TOOLS)}")
+            print_error(f"Invalid tool '{t}'. Valid options: {', '.join(VALID_TOOLS)}")
             sys.exit(1)
         if normalized not in tools:
             tools.append(normalized)
@@ -147,7 +203,7 @@ def check_port(ip, port, timeout=1):
         result = sock.connect_ex((ip, port))
         sock.close()
         return result == 0
-    except:
+    except Exception:
         return False
 
 def scan_ports_for_tools(ip, tool_list):
@@ -186,70 +242,77 @@ def scan_ports_for_tools(ip, tool_list):
 def build_cmd(tool, user, target, credential, command):
     b64 = base64.b64encode(command.encode("utf-16le")).decode()
     use_hash = is_nthash(credential)
-    hash_val = credential.lstrip(':')
-    
+    hash_val = credential.lstrip(':').replace("'", "")
+    quoted_user = shlex.quote(user)
+    quoted_cred = shlex.quote(credential)
+    # For impacket tools, quote the entire user:pass@target string
+    impacket_auth = shlex.quote(f"{user}:{credential}@{target}")
+    impacket_auth_hash = f"{quoted_user}@{target}"
+
     # For nxc tools, add --no-output unless -o was passed
     nxc_output_flag = "" if OUTPUT else " --no-output"
 
     # Impacket tools
     if tool == "psexec":
         cmd = impacket_cmd("psexec")
-        return (f"{cmd} -hashes :{hash_val} \"{user}\"@{target} 'powershell -enc {b64}'"
+        return (f"{cmd} -hashes :{hash_val} {impacket_auth_hash} 'powershell -enc {b64}'"
                 if use_hash else
-                f"{cmd} \"{user}\":{credential}@{target} 'powershell -enc {b64}'")
+                f"{cmd} {impacket_auth} 'powershell -enc {b64}'")
 
     if tool == "mssql":
         cmd = impacket_cmd("mssqlclient")
-        return (f"{cmd} -hashes :{hash_val} \"{user}\"@{target} -windows-auth -command 'enable_xp_cmdshell' -command 'xp_cmdshell powershell -enc {b64}'"
+        return (f"{cmd} -hashes :{hash_val} {impacket_auth_hash} -windows-auth -command 'enable_xp_cmdshell' -command 'xp_cmdshell powershell -enc {b64}'"
                 if use_hash else
-                f"{cmd} \"{user}\":{credential}@{target} -windows-auth -command 'enable_xp_cmdshell' -command 'xp_cmdshell powershell -enc {b64}'")
+                f"{cmd} {impacket_auth} -windows-auth -command 'enable_xp_cmdshell' -command 'xp_cmdshell powershell -enc {b64}'")
 
     if tool == "atexec":
         cmd = impacket_cmd("atexec")
-        return (f"{cmd} -hashes :{hash_val} \"{user}\"@{target} 'powershell -enc {b64}'"
+        return (f"{cmd} -hashes :{hash_val} {impacket_auth_hash} 'powershell -enc {b64}'"
                 if use_hash else
-                f"{cmd} \"{user}\":{credential}@{target} 'powershell -enc {b64}'")
+                f"{cmd} {impacket_auth} 'powershell -enc {b64}'")
 
     # winrm handling - both regular and SSL variants
     # yes I know nxc has a winrm module which can oneshot commands, but evil-winrm has proved itself more dependable
     if tool == "winrm":
-        return (f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u \"{user}\" -H {hash_val}"
+        return (f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u {quoted_user} -H {hash_val}"
                 if use_hash else
-                f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u \"{user}\" -p {credential}")
-    
+                f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u {quoted_user} -p {quoted_cred}")
+
     if tool == "winrm-ssl":
-        return (f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u \"{user}\" -H {hash_val} --ssl"
+        return (f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u {quoted_user} -H {hash_val} --ssl"
                 if use_hash else
-                f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u \"{user}\" -p {credential} --ssl")
+                f"echo 'powershell -enc {b64}' | {WINRM_CMD} -i {target} -u {quoted_user} -p {quoted_cred} --ssl")
 
     # NXC tools
     if tool == "smbexec":
-        return (f"{NXC_CMD} smb {target} -H {hash_val} -u \"{user}\" -X 'powershell -enc {b64}' --exec-method smbexec{nxc_output_flag}"
+        return (f"{NXC_CMD} smb {target} -H {hash_val} -u {quoted_user} -X 'powershell -enc {b64}' --exec-method smbexec{nxc_output_flag}"
                 if use_hash else
-                f"{NXC_CMD} smb {target} -p {credential} -u \"{user}\" -X 'powershell -enc {b64}' --exec-method smbexec{nxc_output_flag}")
+                f"{NXC_CMD} smb {target} -p {quoted_cred} -u {quoted_user} -X 'powershell -enc {b64}' --exec-method smbexec{nxc_output_flag}")
 
     if tool == "wmi":
         # we don't actually need to pass the --no-output here, as defender won't catch it with this specific `cmd /c "powershell -enc` combo
         # additionally, adding --no-output makes it very difficult to differentiate between command execution and a successful authentication w/o execution for wmi specifically
-        return (f"{NXC_CMD} wmi {target} -H {hash_val} -u \"{user}\" -X 'cmd /c \"powershell -enc {b64}\"'"
+        return (f"{NXC_CMD} wmi {target} -H {hash_val} -u {quoted_user} -X 'cmd /c \"powershell -enc {b64}\"'"
                 if use_hash else
-                f"{NXC_CMD} wmi {target} -p {credential} -u \"{user}\" -X 'cmd /c \"powershell -enc {b64}\"'")
+                f"{NXC_CMD} wmi {target} -p {quoted_cred} -u {quoted_user} -X 'cmd /c \"powershell -enc {b64}\"'")
 
     if tool == "ssh":
         if LINUX_MODE:
             b64 = base64.b64encode(command.encode("utf-8")).decode()
-            return f"{NXC_CMD} ssh {target} -p {credential} -u \"{user}\" -x 'echo {b64} | base64 -d | $0'{nxc_output_flag}"
-        return f"{NXC_CMD} ssh {target} -p {credential} -u \"{user}\" -x 'powershell -enc {b64}'{nxc_output_flag}"
+            return f"{NXC_CMD} ssh {target} -p {quoted_cred} -u {quoted_user} -x 'echo {b64} | base64 -d | $0'{nxc_output_flag}"
+        return f"{NXC_CMD} ssh {target} -p {quoted_cred} -u {quoted_user} -x 'powershell -enc {b64}'{nxc_output_flag}"
 
     if tool == "rdp":
-        return (f"{NXC_CMD} rdp {target} -u \"{user}\" -H {hash_val} -X 'powershell -enc {b64}'{nxc_output_flag}"
+        return (f"{NXC_CMD} rdp {target} -u {quoted_user} -H {hash_val} -X 'powershell -enc {b64}'{nxc_output_flag}"
                 if use_hash else
-                f"{NXC_CMD} rdp {target} -u \"{user}\" -p {credential} -X 'powershell -enc {b64}'{nxc_output_flag}")
+                f"{NXC_CMD} rdp {target} -u {quoted_user} -p {quoted_cred} -X 'powershell -enc {b64}'{nxc_output_flag}")
 
     raise Exception(f"Unknown tool: {tool}")
 
 def run_chain(user, ip, credential, command, tool_list=None):
+    """Returns (success_tool, out, cmd, auth_successes) or (None, None, None, auth_successes)"""
     chain = tool_list if tool_list else VALID_TOOLS
+    auth_successes = []  # Track tools where auth succeeded but exec failed
 
     # test both winrm types
     if TOOLS_SPECIFIED:
@@ -264,141 +327,221 @@ def run_chain(user, ip, credential, command, tool_list=None):
     for tool in chain:
         # Can't pass the hash with SSH
         if tool == "ssh" and is_nthash(credential):
-            safe_print(f"  [-] Skipping SSH for {ip}: cannot pass the hash.")
+            print_tool_result(tool, "skip", "cannot pass the hash")
             continue
 
         if tool == "rdp" and NXC_CMD == "crackmapexec":
-            safe_print(f"  [-] Skipping RDP for {ip}: crackmapexec does not support running commands via RDP.")
+            print_tool_result(tool, "skip", "crackmapexec doesn't support RDP exec")
             continue
 
         if tool == "mssql":
-            safe_print(f"[*] Attempting to enable xp_cmdshell on {ip}...")
+            print_verbose(f"Attempting to enable xp_cmdshell on {ip}...")
 
         cmd = build_cmd(tool, user, ip, credential, command)
-        safe_print(f"[*] Trying {tool}: {cmd}")
+
+        # Dry-run mode: just show the command, don't execute
+        if DRY_RUN:
+            with print_lock:
+                print(f"    {C.CYAN}{tool}{C.RESET}")
+                print(f"      {C.YELLOW}${C.RESET} {cmd}")
+                print()
+            continue
+
+        print_verbose(f"Command: {cmd}")
 
         try:
             timeout = RDP_TIMEOUT if tool == "rdp" else EXEC_TIMEOUT
             result = subprocess.run(cmd, shell=True, timeout=timeout, capture_output=True)
             rc = result.returncode
             out = result.stdout.decode("utf-8", errors="ignore")
-            vprint(f"[v] Output for {tool} on {ip} (rc={rc}):")
-            if not out or out == '':
-                vprint(f"(no output)")
-            else:
-                vprint(out)
+            print_verbose(f"Output (rc={rc}): {out if out else '(empty)'}")
 
         except subprocess.TimeoutExpired:
-            safe_print(f"  [-] For {ip}: {tool} timed out.")
+            print_tool_result(tool, "error", "timed out")
             continue
 
         # psexec can have "[-]" in stdout if some shares are writeable and others aren't
         if tool == "psexec":
             if "Found writable share" in out:
                 if "Stopping service" in out:
-                    # psexec succeeded and exited (sometimes with rc 1!)
                     if RUN_ALL:
-                        # need to run all tools, even if we succeeded
-                        safe_print(f"  [+] Success! With command: {cmd}")
-                        oprint(out)
+                        print_tool_result(tool, "success")
+                        print_output(out)
                         continue
                     return (tool, out, cmd)
                 else:
-                    # if "Stopping service" not detected, AV likely caught binary, so it hangs
-                    safe_print(f"  [-] For {ip}: {tool} auth succeeded, but timed out likely due to AV.")
+                    print_tool_result(tool, "warning", "AUTH OK, but timed out (likely AV)")
+                    auth_successes.append(tool)
                     continue
+            elif "is not writable" in out or "Requesting shares" in out:
+                # Auth succeeded but no writable shares found
+                print_tool_result(tool, "warning", "AUTH OK, no writable shares")
+                auth_successes.append(tool)
+                continue
             else:
-                # made it through psexec, but no writeable shares found (will return rc 0)
-                safe_print(f"  [-] For {ip}: {tool} failed.")
+                print_tool_result(tool, "error")
+                continue
+
+        if tool == "atexec":
+            if "rpc_s_access_denied" in out:
+                print_tool_result(tool, "warning", "AUTH OK, task creation denied")
+                auth_successes.append(tool)
+                continue
+            elif "[-]" in out:
+                print_tool_result(tool, "error")
                 continue
 
         if tool == "rdp":
             if "[-] Clipboard" in out:
-                safe_print(f"  \033[33m[!]\033[0m For {ip}: {tool} succeeded as {user} with {credential}, but failed to initialize clipboard and run command. Try manually using RDP.")
+                print_tool_result(tool, "warning", "AUTH OK, clipboard init failed")
+                auth_successes.append(tool)
                 continue
             elif "unrecognized arguments" in out:
-                safe_print(f"  [-] For {ip}: {tool} failed. NetExec is out of date; 'nxc rdp' doesn't support '-X'. Please reinstall netexec to use RDP.")
+                print_tool_result(tool, "error", "NetExec outdated, reinstall for RDP support")
                 continue
             elif "[-]" in out:
-                safe_print(f"  [-] For {ip}: {tool} failed.")
+                print_tool_result(tool, "error")
+                continue
+            # RDP with -X and --no-output returns empty on failure - do auth check
+            elif rc != 0 or out == "":
+                # Run auth-only check to see if RDP access exists
+                auth_cmd = f"{NXC_CMD} rdp {ip} -u {shlex.quote(user)} -p {shlex.quote(credential)}"
+                if is_nthash(credential):
+                    hash_val = credential.lstrip(':').replace("'", "")
+                    auth_cmd = f"{NXC_CMD} rdp {ip} -u {shlex.quote(user)} -H {hash_val}"
+                print_verbose(f"RDP exec failed, checking auth: {auth_cmd}")
+                try:
+                    auth_result = subprocess.run(auth_cmd, shell=True, timeout=EXEC_TIMEOUT, capture_output=True)
+                    auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
+                    print_verbose(f"Auth check output: {auth_out}")
+                    if "[+]" in auth_out and "[-]" not in auth_out:
+                        print_tool_result(tool, "warning", "AUTH OK, exec failed. Try manual RDP.")
+                        auth_successes.append(tool)
+                        continue
+                except Exception:
+                    pass
+                print_tool_result(tool, "error")
                 continue
 
-        if tool in NXC_TOOLS or tool == "atexec":
+        if tool in NXC_TOOLS:
             if '[-]' in out:
                 if "Could not retrieve" in out:
-                    safe_print(f"  \033[33m[!]\033[0m For {ip}: {tool} AUTHENTICATION succeeded as {user} with {credential}, but likely failed to run command. Try running without -o to avoid tripping AV.")
-                # nxc will return 0 if the tool succeeded but auth failed
+                    print_tool_result(tool, "warning", "AUTH OK, command failed (try without -o)")
+                    auth_successes.append(tool)
                 else:
-                    safe_print(f"  [-] For {ip}: {tool} failed.")
+                    print_tool_result(tool, "error")
                 continue
             if tool == "ssh" and 'Linux - Shell' in out and not LINUX_MODE:
-                safe_print(f"  \033[33m[!]\033[0m For {ip}: {tool} AUTHENTICATION succeeded as {user} with {credential}, but this seems like a Linux machine, so the command didn't run.")
-                safe_print("  \033[33m[!]\033[0m Use \033[33m--linux\033[0m to run command across Linux machines.")
+                print_tool_result(tool, "warning", "AUTH OK, Linux detected. Use --linux")
+                auth_successes.append(tool)
                 continue
             if '[+]' in out and '[+] Executed' not in out:
-                safe_print(f"  \033[33m[!]\033[0m For {ip}: {tool} AUTHENTICATION succeeded as {user} with {credential}, but seemingly failed to run command. Does the user have the necessary permissions?")
+                print_tool_result(tool, "warning", "AUTH OK, command failed (check permissions)")
+                auth_successes.append(tool)
+                continue
+            # WMI with empty output - do auth check like RDP
+            if tool == "wmi" and (rc != 0 or out == ""):
+                auth_cmd = f"{NXC_CMD} smb {ip} -u {shlex.quote(user)} -p {shlex.quote(credential)}"
+                if is_nthash(credential):
+                    hash_val = credential.lstrip(':').replace("'", "")
+                    auth_cmd = f"{NXC_CMD} smb {ip} -u {shlex.quote(user)} -H {hash_val}"
+                print_verbose(f"WMI exec failed, checking SMB auth: {auth_cmd}")
+                try:
+                    auth_result = subprocess.run(auth_cmd, shell=True, timeout=EXEC_TIMEOUT, capture_output=True)
+                    auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
+                    print_verbose(f"Auth check output: {auth_out}")
+                    if "[+]" in auth_out and "[-]" not in auth_out:
+                        print_tool_result(tool, "warning", "AUTH OK, WMI exec failed")
+                        auth_successes.append(tool)
+                        continue
+                except Exception:
+                    pass
+                print_tool_result(tool, "error")
+                continue
+            # SSH with empty output - do auth check
+            if tool == "ssh" and (rc != 0 or out == ""):
+                auth_cmd = f"{NXC_CMD} ssh {ip} -u {shlex.quote(user)} -p {shlex.quote(credential)}"
+                print_verbose(f"SSH exec failed, checking auth: {auth_cmd}")
+                try:
+                    auth_result = subprocess.run(auth_cmd, shell=True, timeout=EXEC_TIMEOUT, capture_output=True)
+                    auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
+                    print_verbose(f"Auth check output: {auth_out}")
+                    if "[+]" in auth_out and "[-]" not in auth_out:
+                        print_tool_result(tool, "warning", "AUTH OK, command exec failed")
+                        auth_successes.append(tool)
+                        continue
+                except Exception:
+                    pass
+                print_tool_result(tool, "error")
                 continue
             if rc == 0 and out == "":
-                # nxc tools will sometimes just fail silently
-                safe_print(f"  [-] For {ip}: {tool} failed.")
+                print_tool_result(tool, "error")
                 continue
 
         if tool == "mssql":
             if "The EXECUTE permission was denied" in out:
-                safe_print(f"  \033[33m[!]\033[0m For {ip}: {tool} AUTHENTICATION succeeded as {user} with {credential}, but seemingly failed to run command. Does the user have the necessary permissions?")
+                print_tool_result(tool, "warning", "AUTH OK, command denied (check permissions)")
+                auth_successes.append(tool)
                 continue
             if "ERROR" in out:
-                safe_print(f"  [-] For {ip}: {tool} failed.")
+                print_tool_result(tool, "error")
                 continue
 
         # one-shotting using evil-winrm results in a return code of 1
-        if rc == 0 or (tool in ("winrm", "winrm-ssl") and rc == 1 and "NoMethodError" in out): 
+        if rc == 0 or (tool in ("winrm", "winrm-ssl") and rc == 1 and "NoMethodError" in out):
             if RUN_ALL:
-                # need to run all tools, even if we succeeded
-                safe_print(f"  [+] Success! With command: {cmd}")
-                oprint(out)
+                print_tool_result(tool, "success")
+                print_output(out)
                 continue
-            return (tool, out, cmd)
+            return (tool, out, cmd, auth_successes)
 
-        safe_print(f"  [-] For {ip}: {tool} failed.")
+        print_tool_result(tool, "error")
 
-    return None
+    return (None, None, None, auth_successes)
 
 def execute_on_ip(username, ip, credential, command, tool_list=None):
-    
+    # Print target header
+    with print_lock:
+        print(f"\n{C.CYAN}[Target]{C.RESET} {ip} | {C.CYAN}User:{C.RESET} {username}")
+
     if SKIP_PORTSCAN:
-        safe_print(f"[*] Skipping portscan for {ip} (--skip-portscan enabled)")
+        print_verbose("Skipping portscan (--skip-portscan enabled)")
         viable_tools = tool_list if tool_list else VALID_TOOLS
     else:
-        safe_print(f"[*] Checking applicable tools for {ip} via portscan")
         viable_tools, open_ports = scan_ports_for_tools(ip, tool_list)
-        
-        if VERBOSE:
-            vprint(f"[v] Open ports for {ip}: {sorted(open_ports)}")
-        
+        print_verbose(f"Open ports: {sorted(open_ports)}")
+
         if not viable_tools:
-            safe_print(f"[-] No required ports open for {ip}. Either it's not up, or the target is firewalled. If you want to try anyway, use --skip-portscan.")
+            print_error("No ports open - target down or firewalled")
             return (ip, None)
-        
+
         display_tools = ["winrm" if t == "winrm-ssl" else t for t in viable_tools]
-        display_tools = list(dict.fromkeys(display_tools))  
-        safe_print(f"    \033[34m[i]\033[0m Viable tools found for {ip} based on portscan: {', '.join(display_tools)}")
-    
-    result = run_chain(username, ip, credential, command, viable_tools)
+        display_tools = list(dict.fromkeys(display_tools))
+        print_verbose(f"Viable tools: {', '.join(display_tools)}")
+
+    if DRY_RUN:
+        run_chain(username, ip, credential, command, viable_tools)
+        return (ip, None)
+
+    print_table_header()
+    tool, out, cmd, auth_successes = run_chain(username, ip, credential, command, viable_tools)
 
     if RUN_ALL:
-        safe_print(f"[*] All tools successfully run for {ip} with {username}.")
-        return (ip, None)
-        
-    if result is None:
-        safe_print(f"[-] All tools failed for {ip} with {username}.")
         return (ip, None)
 
-    tool, out, cmd = result
-    safe_print(f"  [+] Success! With command: {cmd}")
+    if tool is None:
+        if auth_successes:
+            with print_lock:
+                print(f"    {C.YELLOW}[!]{C.RESET} No command execution, but valid creds for: {C.GREEN}{', '.join(auth_successes)}{C.RESET}")
+        else:
+            print_error("All methods failed")
+        return (ip, None)
+
+    print_tool_result(tool, "success")
+    print_verbose(f"Command: {cmd}")
     if tool == "mssql":
-        safe_print(f"\033[33m[!] WARNING: MSSQL used for command execution; xp_cmdshell is currently enabled on {ip}. \033[0m")
-    oprint(out)
+        print_warning(f"xp_cmdshell is now enabled on {ip}")
+    print_output(out)
     if not RUN_ALL:
         return (ip, tool)
 
@@ -414,11 +557,12 @@ def parse_args():
     parser.add_argument("--threads", metavar="NUM_THREADS", type=int, default=10, help="Number of concurrent threads")
     parser.add_argument("--timeout", metavar="TIMEOUT_SECONDS", type=int, default=15, help="Number of seconds before commands timeout")
     parser.add_argument("--tools", metavar="LIST", help="Comma-separated list of tools to try")
-    parser.add_argument("--run-all", action="store_true", help="Run all tools, often running the desired command multiple times")
+    parser.add_argument("--first", action="store_true", help="Stop after first successful execution (default: try all tools)")
     parser.add_argument("--skip-portscan", action="store_true", help="Skip port scanning and attempt all tools")
     parser.add_argument("-f", "--file", metavar="CRED_FILE", help="Credential file (newline-separated user/password pairs)")
 
     parser.add_argument("--linux", action="store_true", help="Linux-only mode - automates SSH, ignores other tools")
+    parser.add_argument("--dry-run", action="store_true", help="Show commands without executing them")
 
     parser.add_argument("ip_range", help="IP range (e.g., 192.168.1.1-254)")
     parser.add_argument("username", nargs="?", help="Username")
@@ -449,7 +593,7 @@ def check_dependencies():
     elif r2:
         IMPACKET_PREFIX = ""
     elif not LINUX_MODE:
-        print("[-] impacket not found. Install with: pipx install impacket")
+        print_error("impacket not found. Install with: pipx install impacket")
         sys.exit(1)
     
     # Check nxc/crackmapexec
@@ -463,7 +607,7 @@ def check_dependencies():
     elif r3:
         NXC_CMD = "crackmapexec"
     else:
-        print("[-] netexec not found. Install with: pipx install git+https://github.com/Pennyw0rth/NetExec")
+        print_error("netexec not found. Install with: pipx install git+https://github.com/Pennyw0rth/NetExec")
         sys.exit(1)
 
     # Check evil-winrm
@@ -472,11 +616,13 @@ def check_dependencies():
     else:
         # default in exegol
         base = "/usr/local/rvm/gems"
-        for d in os.listdir(base):
-            if d.endswith("@evil-winrm"):
-                WINRM_CMD = f"{base}/{d}/wrappers/evil-winrm"
+        if os.path.isdir(base):
+            for d in os.listdir(base):
+                if d.endswith("@evil-winrm"):
+                    WINRM_CMD = f"{base}/{d}/wrappers/evil-winrm"
+                    break
     if not WINRM_CMD and not LINUX_MODE:
-        print("[-] evil-winrm not found. Please install with gem install evil-winrm")
+        print_error("evil-winrm not found. Install with: gem install evil-winrm")
         sys.exit(1)
     
 def impacket_cmd(tool):
@@ -486,7 +632,7 @@ def impacket_cmd(tool):
     return f"{tool}.py"
 
 def main():
-    global VERBOSE, OUTPUT, MAX_THREADS, EXEC_TIMEOUT, RUN_ALL, SKIP_PORTSCAN, TOOLS_SPECIFIED, LINUX_MODE
+    global VERBOSE, OUTPUT, MAX_THREADS, EXEC_TIMEOUT, RUN_ALL, SKIP_PORTSCAN, TOOLS_SPECIFIED, LINUX_MODE, DRY_RUN
 
     check_dependencies()
 
@@ -496,9 +642,10 @@ def main():
     OUTPUT = args.o
     MAX_THREADS = args.threads if args.threads > 0 else 1
     EXEC_TIMEOUT = args.timeout
-    RUN_ALL = args.run_all
+    RUN_ALL = not args.first  # Default is to run all tools
     SKIP_PORTSCAN = args.skip_portscan
     LINUX_MODE = args.linux
+    DRY_RUN = args.dry_run
 
     if args.file:
         credential_list = load_credential_file(args.file)
@@ -518,38 +665,42 @@ def main():
     if len(ips) < MAX_THREADS and not args.threads:
         MAX_THREADS = len(ips)
 
-    print(f"[*] Loaded {len(credential_list)} credential set(s)")
-    print(f"[*] Processing {len(ips)} IPs with {MAX_THREADS} threads...")
-
     if args.linux:
         if args.tools:
-            print("\033[31m[!] Tools (--tools) cannot be specified alongside Linux-mode (--linux), as only SSH is supported. Continuing with SSH...\033[0m")
+            print_warning("Tools (--tools) cannot be specified alongside Linux-mode (--linux), as only SSH is supported. Continuing with SSH...")
         args.tools = "ssh"
 
     if args.tools:
         tool_list = parse_tools_list(args.tools)
         TOOLS_SPECIFIED = True
-        print(f"[*] Using tools: {', '.join(tool_list)}")
     else:
         tool_list = None
-    
-    if args.skip_portscan:
-        print("\033[33m[!] Port scanning disabled (--skip-portscan). All tools will be attempted.\033[0m")
 
     command = " ".join(args.command) if args.command else "whoami"
-    
-    if not OUTPUT:
-        print("\033[33m[!] Output Disabled. Run with -o to see successful command output\033[0m")
-    elif not LINUX_MODE:
-        print("-" * 20)
-        print("\033[33m[!] WARNING: Output Enabled. This WILL trip AV for certain tools\033[0m")
-        print("-" * 20)
+
+    # Print configuration section
+    print_section("Configuration")
+    print_info(f"Targets: {len(ips)} IP(s)")
+    print_info(f"Credentials: {len(credential_list)} set(s)")
+    print_info(f"Threads: {MAX_THREADS}")
+    print_info(f"Command: {command}")
+    if tool_list:
+        print_info(f"Tools: {', '.join(tool_list)}")
+    if DRY_RUN:
+        print_warning("DRY-RUN MODE - Commands will be shown but not executed.")
+    if args.skip_portscan:
+        print_warning("Port scanning disabled (--skip-portscan). All tools will be attempted.")
+    if not OUTPUT and not DRY_RUN:
+        print_warning("Output disabled. Run with -o to see successful command output.")
+    elif not LINUX_MODE and not DRY_RUN:
+        print_warning("Output enabled. This WILL trip AV for certain tools.")
+
+    print_section("Execution")
 
     futures = []
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
         for ip in ips:
             for (user, cred) in credential_list:
-                cred = shlex.quote(cred)
                 futures.append(
                     executor.submit(execute_on_ip, user, ip, cred, command, tool_list)
                 )
@@ -558,7 +709,9 @@ def main():
             try:
                 future.result()
             except Exception as e:
-                safe_print(f"[!] Exception: {e}")
+                print_warning(f"Exception: {e}")
+
+    print_section("Complete")
 
 if __name__ == "__main__":
     main()

@@ -66,18 +66,15 @@ Supports various formats:
 
 ### Credential File Format
 
-Create a text file with alternating username/password lines:
+Create a text file with colon-separated username:password pairs (one per line):
 
 ```
-administrator
-Password123!
-admin
-Pass123
-backup_admin
-:12345678123456781234567812345678
+administrator:Password123!
+admin:Pass123
+backup_admin::12345678123456781234567812345678
 ```
 
-Lines starting with `#` are treated as comments. For NT hashes, use them directly as the password.
+Lines starting with `#` are treated as comments. Passwords may contain colons (only the first colon is used as delimiter). For NT hashes, use them directly as the password.
 
 ## Command-Line Options
 

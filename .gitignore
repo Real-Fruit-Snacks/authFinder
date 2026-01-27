@@ -18,3 +18,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Claude Code
+CLAUDE.md
+.claude/
