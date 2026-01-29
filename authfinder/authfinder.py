@@ -4,12 +4,21 @@ import os
 import base64
 import sys
 import shlex
+import signal
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import argparse
 import shutil
 import socket
+
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully."""
+    print(f"\n\n\033[33m[!]\033[0m Interrupted by user. Exiting...")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 EXEC_TIMEOUT = 20
 RDP_TIMEOUT = 45
@@ -44,28 +53,38 @@ class C:
     BLUE = "\033[34m"
     MAGENTA = "\033[35m"
     CYAN = "\033[36m"
-    ORANGE = "\033[38;5;208m"
+    # Pale colors for section headers
+    PEACH = "\033[38;5;216m"      # Soft peach/salmon for main sections
+    PALE_BLUE = "\033[38;5;110m"  # Soft blue for user sections
 
-def print_section(title):
-    """Print a boxed section header like enum4linux-ng."""
+def print_section(title, color=None):
+    """Print a boxed section header."""
+    if color is None:
+        color = C.PEACH
     width = 60
     with print_lock:
         print()
-        print(f" {'=' * width}")
-        print(f"|    {title.ljust(width - 5)}|")
-        print(f" {'=' * width}")
+        print(f"{color} {'=' * width}{C.RESET}")
+        print(f"{color}|{C.RESET}    {title.ljust(width - 5)}{color}|{C.RESET}")
+        print(f"{color} {'=' * width}{C.RESET}")
 
 def print_target_header(ip):
-    """Print target header in orange."""
+    """Print target header in peach."""
+    width = 60
     with print_lock:
-        print(f"\n{C.ORANGE}╔{'═' * 58}╗{C.RESET}")
-        print(f"{C.ORANGE}║{C.RESET}  Target: {ip.ljust(47)}{C.ORANGE}║{C.RESET}")
-        print(f"{C.ORANGE}╚{'═' * 58}╝{C.RESET}")
+        print()
+        print(f"{C.PEACH} {'=' * width}{C.RESET}")
+        print(f"{C.PEACH}|{C.RESET}    Target: {ip.ljust(width - 13)}{C.PEACH}|{C.RESET}")
+        print(f"{C.PEACH} {'=' * width}{C.RESET}")
 
 def print_user_header(user):
-    """Print user sub-header in blue."""
+    """Print user sub-header in pale blue."""
+    width = 56
     with print_lock:
-        print(f"\n  {C.BLUE}┌─ User: {user} {'─' * max(1, 40 - len(user))}┐{C.RESET}")
+        print()
+        print(f"  {C.PALE_BLUE} {'=' * width}{C.RESET}")
+        print(f"  {C.PALE_BLUE}|{C.RESET}    User: {user.ljust(width - 11)}{C.PALE_BLUE}|{C.RESET}")
+        print(f"  {C.PALE_BLUE} {'=' * width}{C.RESET}")
 
 def print_success(msg, indent=0):
     """Print success message in green."""
