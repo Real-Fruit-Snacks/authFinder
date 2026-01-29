@@ -4,6 +4,7 @@ import os
 import base64
 import sys
 import shlex
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import argparse
@@ -21,6 +22,7 @@ SKIP_PORTSCAN = False
 TOOLS_SPECIFIED = False
 LINUX_MODE = False
 DRY_RUN = False
+MASK_CREDS = False
 
 VALID_TOOLS = ["winrm", "smbexec", "wmi", "ssh", "mssql", "psexec", "atexec", "rdp"]
 NXC_TOOLS = {"smbexec", "wmi", "ssh", "rdp"}
@@ -30,6 +32,8 @@ NXC_CMD = "nxc"
 WINRM_CMD = "evil-winrm"
 
 print_lock = threading.Lock()
+results_lock = threading.Lock()
+RESULTS = []  # Collect (ip, user, cred, tool, status) tuples for summary
 
 # ANSI color codes
 class C:
@@ -40,6 +44,7 @@ class C:
     BLUE = "\033[34m"
     MAGENTA = "\033[35m"
     CYAN = "\033[36m"
+    ORANGE = "\033[38;5;208m"
 
 def print_section(title):
     """Print a boxed section header like enum4linux-ng."""
@@ -49,6 +54,18 @@ def print_section(title):
         print(f" {'=' * width}")
         print(f"|    {title.ljust(width - 5)}|")
         print(f" {'=' * width}")
+
+def print_target_header(ip):
+    """Print target header in orange."""
+    with print_lock:
+        print(f"\n{C.ORANGE}╔{'═' * 58}╗{C.RESET}")
+        print(f"{C.ORANGE}║{C.RESET}  Target: {ip.ljust(47)}{C.ORANGE}║{C.RESET}")
+        print(f"{C.ORANGE}╚{'═' * 58}╝{C.RESET}")
+
+def print_user_header(user):
+    """Print user sub-header in blue."""
+    with print_lock:
+        print(f"\n  {C.BLUE}┌─ User: {user} {'─' * max(1, 40 - len(user))}┐{C.RESET}")
 
 def print_success(msg, indent=0):
     """Print success message in green."""
@@ -90,26 +107,68 @@ def print_output(msg):
 def print_table_header():
     """Print the tool results table header."""
     with print_lock:
-        print(f"{'Target':<16} {'User':<20} {'Service':<12} {'Auth':<8} {'Exec':<10} {'Notes'}")
-        print(f"{'─' * 16} {'─' * 20} {'─' * 12} {'─' * 8} {'─' * 10} {'─' * 25}")
+        print(f"  {'Credential':<24} {'Service':<12} {'Auth':<8} {'Exec':<10} {'Notes'}")
+        print(f"  {'─' * 24} {'─' * 12} {'─' * 8} {'─' * 10} {'─' * 20}")
 
-def print_tool_result(tool, status, ip=None, user=None, message=None):
+def format_credential(cred):
+    """Format credential for display, optionally masking it."""
+    if not cred:
+        return ""
+    if not MASK_CREDS:
+        return cred
+    # For hashes, show first 8 chars
+    if cred.startswith(':') or (len(cred) == 32 and all(c in '0123456789abcdefABCDEF' for c in cred)):
+        return cred[:8] + "..."
+    # For passwords, show first 4 chars
+    if len(cred) <= 4:
+        return cred
+    return cred[:4] + "***"
+
+def print_tool_result(tool, status, cred=None, message=None):
     """Print a table row for tool result."""
-    target = (ip or "").ljust(16)
-    username = (user[:19] if user and len(user) > 19 else (user or "")).ljust(20)
+    credential = format_credential(cred).ljust(24)
     tool_padded = tool.ljust(12)
     with print_lock:
         if status == "success":
-            print(f"{target} {username} {tool_padded} {C.GREEN}{'OK':<8}{C.RESET} {C.GREEN}{'OK':<10}{C.RESET}")
+            print(f"  {credential} {tool_padded} {C.GREEN}{'OK':<8}{C.RESET} {C.GREEN}{'OK':<10}{C.RESET}")
         elif status == "error":
             note = message if message else ""
-            print(f"{target} {username} {tool_padded} {C.RED}{'FAILED':<8}{C.RESET} {C.RED}{'-':<10}{C.RESET} {note}")
+            print(f"  {credential} {tool_padded} {C.RED}{'FAILED':<8}{C.RESET} {C.RED}{'-':<10}{C.RESET} {note}")
         elif status == "warning":
             note = message.replace("AUTH OK, ", "").replace("AUTH OK ", "") if message else ""
-            print(f"{target} {username} {tool_padded} {C.GREEN}{'OK':<8}{C.RESET} {C.RED}{'FAILED':<10}{C.RESET} {note}")
+            print(f"  {credential} {tool_padded} {C.GREEN}{'OK':<8}{C.RESET} {C.RED}{'FAILED':<10}{C.RESET} {note}")
         elif status == "skip":
             note = message if message else ""
-            print(f"{target} {username} {tool_padded} {C.BLUE}{'-':<8}{C.RESET} {C.BLUE}{'-':<10}{C.RESET} {note}")
+            print(f"  {credential} {tool_padded} {C.BLUE}{'-':<8}{C.RESET} {C.BLUE}{'-':<10}{C.RESET} {note}")
+
+
+def record_result(ip, user, cred, tool, auth_ok, exec_ok):
+    """Record a result for the summary."""
+    with results_lock:
+        RESULTS.append((ip, user, cred, tool, auth_ok, exec_ok))
+
+
+def print_summary():
+    """Print summary of all successful authentications."""
+    # Filter to only auth successes
+    successes = [(ip, user, cred, tool, auth_ok, exec_ok)
+                 for ip, user, cred, tool, auth_ok, exec_ok in RESULTS if auth_ok]
+
+    if not successes:
+        print_warning("No successful authentications found.")
+        return
+
+    print(f"\n{'Target':<16} {'Username':<16} {'Password':<20} {'Service':<12} {'Result'}")
+    print(f"{'─' * 16} {'─' * 16} {'─' * 20} {'─' * 12} {'─' * 12}")
+
+    for ip, user, cred, tool, auth_ok, exec_ok in successes:
+        user_display = user[:15] if len(user) > 15 else user
+        cred_display = cred[:19] if len(cred) > 19 else cred
+        if exec_ok:
+            result = f"{C.GREEN}Auth+Exec{C.RESET}"
+        else:
+            result = f"{C.YELLOW}Auth Only{C.RESET}"
+        print(f"{ip:<16} {user_display:<16} {cred_display:<20} {tool:<12} {result}")
 
 
 def parse_ip_range(ip_range):
@@ -360,11 +419,11 @@ def run_chain(user, ip, credential, command, tool_list=None):
     for tool in chain:
         # Can't pass the hash with SSH
         if tool == "ssh" and is_nthash(credential):
-            print_tool_result(tool, "skip", ip, user, "cannot pass the hash")
+            print_tool_result(tool, "skip", credential, "cannot pass the hash")
             continue
 
         if tool == "rdp" and NXC_CMD == "crackmapexec":
-            print_tool_result(tool, "skip", ip, user, "crackmapexec doesn't support RDP exec")
+            print_tool_result(tool, "skip", credential, "crackmapexec doesn't support RDP exec")
             continue
 
         if tool == "mssql":
@@ -390,50 +449,55 @@ def run_chain(user, ip, credential, command, tool_list=None):
             print_verbose(f"Output (rc={rc}): {out if out else '(empty)'}")
 
         except subprocess.TimeoutExpired:
-            print_tool_result(tool, "error", ip, user, "timed out")
+            print_tool_result(tool, "error", credential, "timed out")
             continue
 
         # psexec can have "[-]" in stdout if some shares are writeable and others aren't
         if tool == "psexec":
             if "Found writable share" in out:
                 if "Stopping service" in out:
+                    record_result(ip, user, credential, tool, True, True)
                     if RUN_ALL:
-                        print_tool_result(tool, "success", ip, user)
+                        print_tool_result(tool, "success", credential)
                         print_output(out)
                         continue
                     return (tool, out, cmd)
                 else:
-                    print_tool_result(tool, "warning", ip, user, "AUTH OK, but timed out (likely AV)")
+                    record_result(ip, user, credential, tool, True, False)
+                    print_tool_result(tool, "warning", credential, "AUTH OK, but timed out (likely AV)")
                     auth_successes.append(tool)
                     continue
             elif "is not writable" in out or "Requesting shares" in out:
                 # Auth succeeded but no writable shares found
-                print_tool_result(tool, "warning", ip, user, "AUTH OK, no writable shares")
+                record_result(ip, user, credential, tool, True, False)
+                print_tool_result(tool, "warning", credential, "AUTH OK, no writable shares")
                 auth_successes.append(tool)
                 continue
             else:
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
 
         if tool == "atexec":
             if "rpc_s_access_denied" in out:
-                print_tool_result(tool, "warning", ip, user, "AUTH OK, task creation denied")
+                record_result(ip, user, credential, tool, True, False)
+                print_tool_result(tool, "warning", credential, "AUTH OK, task creation denied")
                 auth_successes.append(tool)
                 continue
             elif "[-]" in out:
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
 
         if tool == "rdp":
             if "[-] Clipboard" in out:
-                print_tool_result(tool, "warning", ip, user, "AUTH OK, clipboard init failed")
+                record_result(ip, user, credential, tool, True, False)
+                print_tool_result(tool, "warning", credential, "AUTH OK, clipboard init failed")
                 auth_successes.append(tool)
                 continue
             elif "unrecognized arguments" in out:
-                print_tool_result(tool, "error", ip, user, "NetExec outdated, reinstall for RDP support")
+                print_tool_result(tool, "error", credential, "NetExec outdated, reinstall for RDP support")
                 continue
             elif "[-]" in out:
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
             # RDP with -X and --no-output returns empty on failure - do auth check
             elif rc != 0 or out == "":
@@ -448,28 +512,32 @@ def run_chain(user, ip, credential, command, tool_list=None):
                     auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
                     print_verbose(f"Auth check output: {auth_out}")
                     if "[+]" in auth_out and "[-]" not in auth_out:
-                        print_tool_result(tool, "warning", ip, user, "AUTH OK, exec failed. Try manual RDP.")
+                        record_result(ip, user, credential, tool, True, False)
+                        print_tool_result(tool, "warning", credential, "AUTH OK, exec failed. Try manual RDP.")
                         auth_successes.append(tool)
                         continue
                 except Exception:
                     pass
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
 
         if tool in NXC_TOOLS:
             if '[-]' in out:
                 if "Could not retrieve" in out:
-                    print_tool_result(tool, "warning", ip, user, "AUTH OK, command failed (try without -o)")
+                    record_result(ip, user, credential, tool, True, False)
+                    print_tool_result(tool, "warning", credential, "AUTH OK, command failed (try without -o)")
                     auth_successes.append(tool)
                 else:
-                    print_tool_result(tool, "error", ip, user)
+                    print_tool_result(tool, "error", credential)
                 continue
             if tool == "ssh" and 'Linux - Shell' in out and not LINUX_MODE:
-                print_tool_result(tool, "warning", ip, user, "AUTH OK, Linux detected. Use --linux")
+                record_result(ip, user, credential, tool, True, False)
+                print_tool_result(tool, "warning", credential, "AUTH OK, Linux detected. Use --linux")
                 auth_successes.append(tool)
                 continue
             if '[+]' in out and '[+] Executed' not in out:
-                print_tool_result(tool, "warning", ip, user, "AUTH OK, command failed (check permissions)")
+                record_result(ip, user, credential, tool, True, False)
+                print_tool_result(tool, "warning", credential, "AUTH OK, command failed (check permissions)")
                 auth_successes.append(tool)
                 continue
             # WMI with empty output - do auth check like RDP
@@ -484,12 +552,13 @@ def run_chain(user, ip, credential, command, tool_list=None):
                     auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
                     print_verbose(f"Auth check output: {auth_out}")
                     if "[+]" in auth_out and "[-]" not in auth_out:
-                        print_tool_result(tool, "warning", ip, user, "AUTH OK, WMI exec failed")
+                        record_result(ip, user, credential, tool, True, False)
+                        print_tool_result(tool, "warning", credential, "AUTH OK, WMI exec failed")
                         auth_successes.append(tool)
                         continue
                 except Exception:
                     pass
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
             # SSH with empty output - do auth check
             if tool == "ssh" and (rc != 0 or out == ""):
@@ -500,77 +569,90 @@ def run_chain(user, ip, credential, command, tool_list=None):
                     auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
                     print_verbose(f"Auth check output: {auth_out}")
                     if "[+]" in auth_out and "[-]" not in auth_out:
-                        print_tool_result(tool, "warning", ip, user, "AUTH OK, command exec failed")
+                        record_result(ip, user, credential, tool, True, False)
+                        print_tool_result(tool, "warning", credential, "AUTH OK, command exec failed")
                         auth_successes.append(tool)
                         continue
                 except Exception:
                     pass
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
             if rc == 0 and out == "":
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
 
         if tool == "mssql":
             if "The EXECUTE permission was denied" in out:
-                print_tool_result(tool, "warning", ip, user, "AUTH OK, command denied (check permissions)")
+                record_result(ip, user, credential, tool, True, False)
+                print_tool_result(tool, "warning", credential, "AUTH OK, command denied (check permissions)")
                 auth_successes.append(tool)
                 continue
             if "ERROR" in out:
-                print_tool_result(tool, "error", ip, user)
+                print_tool_result(tool, "error", credential)
                 continue
 
         # one-shotting using evil-winrm results in a return code of 1
         if rc == 0 or (tool in ("winrm", "winrm-ssl") and rc == 1 and "NoMethodError" in out):
+            record_result(ip, user, credential, tool, True, True)
             if RUN_ALL:
-                print_tool_result(tool, "success", ip, user)
+                print_tool_result(tool, "success", credential)
                 print_output(out)
                 continue
             return (tool, out, cmd, auth_successes)
 
-        print_tool_result(tool, "error", ip, user)
+        print_tool_result(tool, "error", credential)
 
     return (None, None, None, auth_successes)
 
-def execute_on_ip(username, ip, credential, command, tool_list=None):
+def execute_for_user(ip, user, credentials, command, tool_list=None):
+    """Execute command for a single user with multiple credentials."""
+    # Port scan once per user (all creds use same ports)
     if SKIP_PORTSCAN:
-        print_verbose(f"{ip}/{username}: Skipping portscan (--skip-portscan enabled)")
+        print_verbose(f"{ip}/{user}: Skipping portscan")
         viable_tools = tool_list if tool_list else VALID_TOOLS
     else:
         viable_tools, open_ports = scan_ports_for_tools(ip, tool_list)
-        print_verbose(f"{ip}/{username}: Open ports: {sorted(open_ports)}")
+        print_verbose(f"{ip}/{user}: Open ports: {sorted(open_ports)}")
 
         if not viable_tools:
             with print_lock:
-                print(f"{ip:<16} {username:<20} {C.RED}{'--':<12} {'--':<8} {'--':<10}{C.RESET} No ports open")
-            return (ip, None)
+                print(f"  {C.RED}No open ports - target down or firewalled{C.RESET}")
+            return None
 
         display_tools = ["winrm" if t == "winrm-ssl" else t for t in viable_tools]
         display_tools = list(dict.fromkeys(display_tools))
-        print_verbose(f"{ip}/{username}: Viable tools: {', '.join(display_tools)}")
+        print_verbose(f"{ip}/{user}: Viable tools: {', '.join(display_tools)}")
 
-    if DRY_RUN:
-        run_chain(username, ip, credential, command, viable_tools)
-        return (ip, None)
+    # Print user header and table
+    print_user_header(user)
+    if not DRY_RUN:
+        print_table_header()
 
-    tool, out, cmd, auth_successes = run_chain(username, ip, credential, command, viable_tools)
+    # Run each credential
+    for cred in credentials:
+        if DRY_RUN:
+            run_chain(user, ip, cred, command, viable_tools)
+            continue
 
-    if RUN_ALL:
-        return (ip, None)
+        tool, out, cmd, auth_successes = run_chain(user, ip, cred, command, viable_tools)
 
-    if tool is None:
-        if auth_successes:
-            with print_lock:
-                print(f"{C.YELLOW}[!]{C.RESET} {ip}/{username}: No exec, but valid creds for: {C.GREEN}{', '.join(auth_successes)}{C.RESET}")
-        return (ip, None)
+        if tool is not None and not RUN_ALL:
+            print_tool_result(tool, "success", cred)
+            print_verbose(f"Command: {cmd}")
+            if tool == "mssql":
+                print_warning(f"xp_cmdshell is now enabled on {ip}")
+            print_output(out)
+            return tool
 
-    print_tool_result(tool, "success", ip, username)
-    print_verbose(f"Command: {cmd}")
-    if tool == "mssql":
-        print_warning(f"xp_cmdshell is now enabled on {ip}")
-    print_output(out)
-    if not RUN_ALL:
-        return (ip, tool)
+    return None
+
+
+def execute_on_target(ip, user_creds, command, tool_list=None):
+    """Execute command on a target for all users and their credentials."""
+    print_target_header(ip)
+
+    for user, credentials in user_creds.items():
+        execute_for_user(ip, user, credentials, command, tool_list)
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -590,6 +672,7 @@ def parse_args():
 
     parser.add_argument("--linux", action="store_true", help="Linux-only mode - automates SSH, ignores other tools")
     parser.add_argument("--dry-run", action="store_true", help="Show commands without executing them")
+    parser.add_argument("--mask-creds", action="store_true", help="Mask credentials in output (show first few chars only)")
 
     parser.add_argument("ip_range", help="IP range (e.g., 192.168.1.1-254)")
     parser.add_argument("username", nargs="?", help="Username or file containing usernames (one per line)")
@@ -659,7 +742,7 @@ def impacket_cmd(tool):
     return f"{tool}.py"
 
 def main():
-    global VERBOSE, OUTPUT, MAX_THREADS, EXEC_TIMEOUT, RUN_ALL, SKIP_PORTSCAN, TOOLS_SPECIFIED, LINUX_MODE, DRY_RUN
+    global VERBOSE, OUTPUT, MAX_THREADS, EXEC_TIMEOUT, RUN_ALL, SKIP_PORTSCAN, TOOLS_SPECIFIED, LINUX_MODE, DRY_RUN, MASK_CREDS
 
     check_dependencies()
 
@@ -673,6 +756,7 @@ def main():
     SKIP_PORTSCAN = args.skip_portscan
     LINUX_MODE = args.linux
     DRY_RUN = args.dry_run
+    MASK_CREDS = args.mask_creds
 
     if args.file:
         credential_list = load_credential_file(args.file)
@@ -680,6 +764,13 @@ def main():
         usernames = resolve_argument(args.username)
         credentials = resolve_argument(args.credential)
         credential_list = [(u, c) for u in usernames for c in credentials]
+
+    # Group credentials by user for cleaner output
+    user_creds = OrderedDict()
+    for user, cred in credential_list:
+        if user not in user_creds:
+            user_creds[user] = []
+        user_creds[user].append(cred)
 
     if args.ip_range.endswith('.txt'):
         ips = []
@@ -725,22 +816,30 @@ def main():
         print_warning("Output enabled. This WILL trip AV for certain tools.")
 
     print_section("Execution")
-    if not DRY_RUN:
-        print_table_header()
 
-    futures = []
-    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        for ip in ips:
-            for (user, cred) in credential_list:
+    # Process targets - parallelize across targets but keep each target's output grouped
+    if len(ips) == 1:
+        # Single target - run directly
+        execute_on_target(ips[0], user_creds, command, tool_list)
+    else:
+        # Multiple targets - parallelize
+        futures = []
+        with ThreadPoolExecutor(max_workers=min(MAX_THREADS, len(ips))) as executor:
+            for ip in ips:
                 futures.append(
-                    executor.submit(execute_on_ip, user, ip, cred, command, tool_list)
+                    executor.submit(execute_on_target, ip, user_creds, command, tool_list)
                 )
 
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print_warning(f"Exception: {e}")
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print_warning(f"Exception: {e}")
+
+    # Print summary of successful authentications
+    if not DRY_RUN:
+        print_section("Summary")
+        print_summary()
 
     print_section("Complete")
 
