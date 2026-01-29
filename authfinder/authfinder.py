@@ -175,6 +175,37 @@ def load_credential_file(path):
 
     return creds
 
+
+def load_values_from_file(path):
+    """
+    Load values from a file (one per line).
+    Blank lines and lines starting with # are ignored.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [line.rstrip("\n\r") for line in f]
+    except Exception as e:
+        print_error(f"Cannot read file '{path}': {e}")
+        sys.exit(1)
+
+    values = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            values.append(stripped)
+
+    return values
+
+
+def resolve_argument(value):
+    """
+    If value is a path to an existing file, load values from it.
+    Otherwise return the value as a single-item list.
+    """
+    if os.path.isfile(value):
+        return load_values_from_file(value)
+    return [value]
+
 def normalize_tool_name(name):
     """Normalize tool name aliases to canonical form."""
     name = name.lower().strip()
@@ -559,14 +590,14 @@ def parse_args():
     parser.add_argument("--tools", metavar="LIST", help="Comma-separated list of tools to try")
     parser.add_argument("--first", action="store_true", help="Stop after first successful execution (default: try all tools)")
     parser.add_argument("--skip-portscan", action="store_true", help="Skip port scanning and attempt all tools")
-    parser.add_argument("-f", "--file", metavar="CRED_FILE", help="Credential file (newline-separated user/password pairs)")
+    parser.add_argument("-f", "--file", metavar="CRED_FILE", help="Credential file (username:password per line, colon-separated)")
 
     parser.add_argument("--linux", action="store_true", help="Linux-only mode - automates SSH, ignores other tools")
     parser.add_argument("--dry-run", action="store_true", help="Show commands without executing them")
 
     parser.add_argument("ip_range", help="IP range (e.g., 192.168.1.1-254)")
-    parser.add_argument("username", nargs="?", help="Username")
-    parser.add_argument("credential", nargs="?", help="Password or NT hash")
+    parser.add_argument("username", nargs="?", help="Username or file containing usernames (one per line)")
+    parser.add_argument("credential", nargs="?", help="Password/NT hash or file containing credentials (one per line)")
     parser.add_argument("command", nargs="*", help="Command to run (default: whoami)")
 
     args = parser.parse_args()
@@ -650,7 +681,9 @@ def main():
     if args.file:
         credential_list = load_credential_file(args.file)
     else:
-        credential_list = [(args.username, args.credential)]
+        usernames = resolve_argument(args.username)
+        credentials = resolve_argument(args.credential)
+        credential_list = [(u, c) for u in usernames for c in credentials]
 
     if args.ip_range.endswith('.txt'):
         ips = []

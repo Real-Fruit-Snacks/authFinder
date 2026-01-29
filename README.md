@@ -69,8 +69,10 @@ For each host, it tries methods in order until one succeeds (or all methods with
 ### Basic Syntax
 
 ```
-authfinder <targets> <username> <password> <command> [options]
+authfinder <targets> <username> <credential> <command> [options]
 ```
+
+The `username` and `credential` arguments accept either literal values or file paths. If a file path is provided, values are read from the file (one per line). When both are files, all combinations are tested.
 
 ### Target Formats
 
@@ -82,9 +84,33 @@ authfinder <targets> <username> <password> <command> [options]
 | Multi-octet range | `10.0.1-5.10-20` | All combinations |
 | File | `targets.txt` | One target per line |
 
-### Credential File Format
+### Credential Input Methods
 
-Use `-f` to specify a file with credentials (one per line):
+**Option 1: Positional arguments (with optional file support)**
+
+```bash
+# Literal values
+authfinder 192.168.1.10 admin Password123 whoami
+
+# Username from file, single password
+authfinder 192.168.1.10 users.txt Password123 whoami
+
+# Single username, passwords from file
+authfinder 192.168.1.10 admin passwords.txt whoami
+
+# Both from files (tests all combinations)
+authfinder 192.168.1.10 users.txt passwords.txt whoami
+```
+
+Files contain one value per line. Blank lines and `#` comments are ignored.
+
+**Option 2: Credential file with `-f` (username:password pairs)**
+
+```bash
+authfinder 192.168.1.10 -f creds.txt whoami
+```
+
+File format is `username:password` per line (colon-separated). Only the first colon is the delimiter, so passwords can contain colons:
 
 ```
 # Comments start with #
@@ -92,8 +118,6 @@ administrator:Password123!
 admin:Pass123
 backup_admin::aabbccdd11223344aabbccdd11223344
 ```
-
-Format is `username:password` - only the first colon is the delimiter, so passwords can contain colons.
 
 ### Options
 
