@@ -129,9 +129,11 @@ backup_admin::aabbccdd11223344aabbccdd11223344
 | `--threads <n>` | Concurrent threads (default: 10) |
 | `--tools <list>` | Comma-separated list of tools to try |
 | `--timeout <sec>` | Command timeout (default: 15) |
-| `--run-all` | Try all methods, don't stop at first success |
+| `--first` | Stop after first successful execution |
 | `--skip-portscan` | Skip port scan, attempt all tools |
 | `--linux` | Linux mode (SSH only) |
+| `--mask-creds` | Mask credentials in output |
+| `--dry-run` | Show commands without executing |
 
 ### Examples
 
@@ -151,6 +153,60 @@ authfinder 192.168.1.10 admin Pass123 --run-all whoami
 # Linux targets via SSH
 authfinder 10.0.0.1-10 root password --linux id
 ```
+
+## Example Output
+
+Results are grouped by target and user, with a summary of successful authentications:
+
+```
+ ============================================================
+|    Configuration                                          |
+ ============================================================
+[*] Targets: 1 IP(s)
+[*] Credentials: 6 set(s)
+[*] Command: whoami
+
+ ============================================================
+|    Execution                                              |
+ ============================================================
+
+ ============================================================
+|    Target: 10.1.107.139                                   |
+ ============================================================
+
+   ========================================================
+  |    User: administrator                                 |
+   ========================================================
+  Credential               Service      Auth     Exec       Notes
+  ──────────────────────── ──────────── ──────── ────────── ────────────────────
+  Password123              winrm        FAILED   -          timed out
+  Password123              smbexec      FAILED   -
+  SecretPass!              winrm        OK       OK
+
+   ========================================================
+  |    User: roger                                         |
+   ========================================================
+  Credential               Service      Auth     Exec       Notes
+  ──────────────────────── ──────────── ──────── ────────── ────────────────────
+  Password123              smbexec      OK       FAILED     command failed
+  Password123              rdp          OK       FAILED     exec failed. Try manual RDP.
+
+ ============================================================
+|    Summary                                                |
+ ============================================================
+
+Target           Username         Password             Service      Result
+──────────────── ──────────────── ──────────────────── ──────────── ────────────
+10.1.107.139     administrator    SecretPass!          winrm        Auth+Exec
+10.1.107.139     roger            Password123          smbexec      Auth Only
+10.1.107.139     roger            Password123          rdp          Auth Only
+
+ ============================================================
+|    Complete                                               |
+ ============================================================
+```
+
+The summary shows all credentials that achieved at least authentication success, distinguishing between **Auth+Exec** (full command execution) and **Auth Only** (valid credentials but execution blocked).
 
 ## License
 
