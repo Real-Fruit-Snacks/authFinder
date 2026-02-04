@@ -666,6 +666,10 @@ def run_chain(user, ip, credential, command, tool_list=None):
 
         # === AUTH-ONLY MODE: All exec-capable tools use nxc for auth check ===
         if not EXEC_MODE and tool in ("psexec", "smbexec", "atexec", "wmi", "winrm", "winrm-ssl", "ssh", "rdp", "mssql"):
+            # Check for Guest login (not a real authentication)
+            if '(Guest)' in out:
+                print_tool_result(tool, "error", credential, "Guest login (invalid creds)")
+                continue
             if '[+]' in out and '[-]' not in out:
                 record_result(ip, user, credential, tool, True, None)
                 print_tool_result(tool, "auth", credential)
@@ -677,6 +681,10 @@ def run_chain(user, ip, credential, command, tool_list=None):
 
         # Auth-only nxc tools (ldap, ldaps, ftp, vnc)
         if tool in ("ldap", "ldaps", "ftp", "vnc"):
+            # Check for Guest login (not a real authentication)
+            if '(Guest)' in out:
+                print_tool_result(tool, "error", credential, "Guest login (invalid creds)")
+                continue
             if '[+]' in out and '[-]' not in out:
                 record_result(ip, user, credential, tool, True, None)
                 print_tool_result(tool, "auth", credential)
@@ -816,6 +824,10 @@ def run_chain(user, ip, credential, command, tool_list=None):
                     auth_result = subprocess.run(auth_cmd, shell=True, timeout=EXEC_TIMEOUT, capture_output=True)
                     auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
                     print_verbose(f"Auth check output: {auth_out}")
+                    # Check for Guest login (not a real authentication)
+                    if "(Guest)" in auth_out:
+                        print_tool_result(tool, "error", credential, "Guest login (invalid creds)")
+                        continue
                     if "[+]" in auth_out and "[-]" not in auth_out:
                         record_result(ip, user, credential, tool, True, False)
                         print_tool_result(tool, "warning", credential, "AUTH OK, exec failed. Try manual RDP.")
@@ -827,6 +839,10 @@ def run_chain(user, ip, credential, command, tool_list=None):
                 continue
 
         if tool in NXC_TOOLS:
+            # Check for Guest login (not a real authentication)
+            if '(Guest)' in out:
+                print_tool_result(tool, "error", credential, "Guest login (invalid creds)")
+                continue
             if '[-]' in out:
                 if "Could not retrieve" in out:
                     record_result(ip, user, credential, tool, True, False)
@@ -841,9 +857,13 @@ def run_chain(user, ip, credential, command, tool_list=None):
                 auth_successes.append(tool)
                 continue
             if '[+]' in out and '[+] Executed' not in out:
-                record_result(ip, user, credential, tool, True, False)
-                print_tool_result(tool, "warning", credential, "AUTH OK, command failed (check permissions)")
-                auth_successes.append(tool)
+                # Double-check it's not a Guest login before marking as auth success
+                if '(Guest)' not in out:
+                    record_result(ip, user, credential, tool, True, False)
+                    print_tool_result(tool, "warning", credential, "AUTH OK, command failed (check permissions)")
+                    auth_successes.append(tool)
+                else:
+                    print_tool_result(tool, "error", credential, "Guest login (invalid creds)")
                 continue
             # WMI with empty output - do auth check like RDP
             if tool == "wmi" and (rc != 0 or out == ""):
@@ -856,9 +876,13 @@ def run_chain(user, ip, credential, command, tool_list=None):
                     auth_result = subprocess.run(auth_cmd, shell=True, timeout=EXEC_TIMEOUT, capture_output=True)
                     auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
                     print_verbose(f"Auth check output: {auth_out}")
+                    # Check for Guest login (not a real authentication)
+                    if "(Guest)" in auth_out:
+                        print_tool_result(tool, "error", credential, "Guest login (invalid creds)")
+                        continue
                     if "[+]" in auth_out and "[-]" not in auth_out:
                         record_result(ip, user, credential, tool, True, False)
-                        print_tool_result(tool, "warning", credential, "AUTH OK, WMI exec failed")
+                        print_tool_result(tool, "warning", credential, "WMI exec failed")
                         auth_successes.append(tool)
                         continue
                 except Exception:
@@ -873,6 +897,10 @@ def run_chain(user, ip, credential, command, tool_list=None):
                     auth_result = subprocess.run(auth_cmd, shell=True, timeout=EXEC_TIMEOUT, capture_output=True)
                     auth_out = auth_result.stdout.decode("utf-8", errors="ignore")
                     print_verbose(f"Auth check output: {auth_out}")
+                    # Check for Guest login (not a real authentication)
+                    if "(Guest)" in auth_out:
+                        print_tool_result(tool, "error", credential, "Guest login (invalid creds)")
+                        continue
                     if "[+]" in auth_out and "[-]" not in auth_out:
                         record_result(ip, user, credential, tool, True, False)
                         print_tool_result(tool, "warning", credential, "AUTH OK, command exec failed")
