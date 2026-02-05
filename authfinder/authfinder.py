@@ -189,19 +189,24 @@ def print_summary():
         print_warning("No successful authentications found.")
         return
 
-    print(f"\n{'Target':<16} {'Username':<16} {'Password':<20} {'Service':<12} {'Result'}")
-    print(f"{'─' * 16} {'─' * 16} {'─' * 20} {'─' * 12} {'─' * 12}")
+    # Calculate dynamic column widths
+    ip_width = max(len("Target"), max(len(s[0]) for s in successes)) + 2
+    user_width = max(len("Username"), max(len(s[1]) for s in successes)) + 2
+    cred_width = max(len("Password"), max(len(s[2]) for s in successes)) + 2
+    tool_width = max(len("Service"), max(len(s[3]) for s in successes)) + 2
+
+    # Print header
+    print(f"\n{ 'Target':<{ip_width}} { 'Username':<{user_width}} { 'Password':<{cred_width}} { 'Service':<{tool_width}} {'Result'}")
+    print(f"{'─' * ip_width} {'─' * user_width} {'─' * cred_width} {'─' * tool_width} {'─' * 12}")
 
     for ip, user, cred, tool, auth_ok, exec_ok in successes:
-        user_display = user[:15] if len(user) > 15 else user
-        cred_display = cred[:19] if len(cred) > 19 else cred
         if exec_ok is True:
             result = f"{C.GREEN}Auth+Exec{C.RESET}"
         elif exec_ok is None:
             result = f"{C.CYAN}Auth{C.RESET}"  # Auth-only tool
         else:
             result = f"{C.YELLOW}Auth Only{C.RESET}"  # Auth OK but exec failed
-        print(f"{ip:<16} {user_display:<16} {cred_display:<20} {tool:<12} {result}")
+        print(f"{ip:<{ip_width}} {user:<{user_width}} {cred:<{cred_width}} {tool:<{tool_width}} {result}")
 
 
 def parse_ip_range(ip_range):
