@@ -36,6 +36,7 @@ authfinder 10.0.0.1 admin Pass123 "whoami /all" -x
 - **Multi-threaded** - Test credentials across multiple hosts simultaneously
 - **Pass-the-Hash** - Use NTLM hashes directly as credentials
 - **Command Execution** - Optionally execute commands with `-x` flag
+- **Dynamic Summary** - Clean, auto-scaling summary table of all successful authentications
 
 ## Installation
 
@@ -206,14 +207,14 @@ backup_admin::aabbccdd11223344aabbccdd11223344
 |    Target: 10.0.0.1                                       |
  ============================================================
 
-   ========================================================
-  |    User: administrator                                 |
-   ========================================================
-  Credential               Service      Auth     Exec       Notes
-  ──────────────────────── ──────────── ──────── ────────── ────────────
-  Password123              ldap         OK       N/A
-  Password123              smb          OK       N/A
-  Password123              winrm        OK       N/A
+    ========================================================
+   |    User: administrator                                 |
+    ========================================================
+   Credential               Service      Auth     Exec       Notes
+   ──────────────────────── ──────────── ──────── ────────── ────────────
+   Password123              ldap         OK       N/A
+   Password123              smb          OK       N/A
+   Password123              winrm        OK       N/A
 
  ============================================================
 |    Summary                                                |
